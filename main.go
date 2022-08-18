@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -222,6 +223,11 @@ func IsNil(i interface{}) bool {
 
 // 转发
 func proxy(source, target, dup net.Conn, p Peer) {
+	if p.Log == "false" {
+		io.Copy(source, target)
+		io.Copy(target, source)
+		return
+	}
 	go (func() {
 		for {
 			b := make([]byte, size)
