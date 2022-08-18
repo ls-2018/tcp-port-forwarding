@@ -1,6 +1,21 @@
 # 通信调试助手
 
+## 编译方式
+### 1、安装Golang环境
+### 2、克隆项目
+### 3、执行go get安装依赖
+### 4、开始编译
 
+```shell
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o tcpproxy.x64.exe
+./upx.exe -9 tcpproxy.x64.exe
+```
+
+## 下载方式
+通过Release下载 https://gitee.com/tansuyun/tcp-port-forwarding/releases
+
+
+## TODO功能清单
 [√]支持多端口监听  
 [√]支持自动切换后端  
 [√]支持禁用日志提高性能  
