@@ -26,7 +26,7 @@ var cfile = flag.String("c", "", "配置文件路径")
 
 // 日志路径
 var logpath = "./log/"
-var ver = "20220817"
+var ver = ""
 var loge = false
 var logf = log.Printf
 var curfile = ""
@@ -37,6 +37,8 @@ var TConf *Config = &Config{Peers: make([]Peer, 0)}
 type Peer struct {
 	// 监听名称
 	Name string
+	// 类型 UDP或TCP
+	Type string
 	// 本地监听地址
 	Listen string
 	// 转发目标，支持多个地址，如果一个地址不够则自动切换到下个地址，前提是有足够的地址切换，期望支持AMQP
@@ -59,6 +61,83 @@ type Peer struct {
 }
 
 func start(p Peer) bool {
+	// if p.Type == "UDP" {
+	// 	ulocal, err := net.ResolveUDPAddr("udp", p.Listen)
+	// 	if err != nil {
+	// 		log.Printf("[ERR] [UDP] [%s] 本地地址错误: %s \r\n", p.Name, err)
+	// 		return false
+	// 	}
+	// 	var Target *net.UDPAddr
+	// 	for _, v := range p.Targets {
+	// 		if strings.HasPrefix(v, "amqp") {
+	// 			//TODO AMQP支持
+	// 		} else {
+	// 			r, e := net.ResolveUDPAddr("udp", v)
+	// 			if e != nil {
+	// 				log.Printf("[ERR] [UDP] [%s] 转发地址错误: %s \r\n", p.Name, v)
+	// 			}
+	// 			Target = r
+	// 		}
+	// 	}
+	// 	var DupUDPAddr *net.UDPAddr
+	// 	var DupUDPClient *net.UDPConn
+	// 	if len(p.Duplex) > 0 {
+	// 		DupUDPAddr, err = net.ResolveUDPAddr("udp", p.Duplex)
+	// 		if err != nil {
+	// 			log.Printf("[ERR] [UDP] [%s] 复制目标地址错误: %s \r\n", p.Name, err)
+	// 			return false
+	// 		}
+	// 		cl, er := net.DialUDP("udp", nil, DupUDPAddr)
+	// 		if er == nil {
+	// 			DupUDPClient = cl
+	// 		}
+	// 	}
+	// 	//2.监听服务器的地址
+	// 	ulistenner, err := net.ListenUDP("tcp4", ulocal)
+	// 	if err != nil {
+	// 		log.Printf("[ERR] [UDP] [%s] 服务启动失败: %s \r\n", p.Name, err)
+	// 		return false
+	// 	}
+	// 	log.Printf("服务启动: [UDP] [%s] %s", p.Name, p.Listen)
+
+	// 	// ConnPair := make(map[string]string)
+	// 	// go (func() {
+	// 	// 	for {
+	// 	// 		udata := make([]byte, 2048)
+	// 	// 		n, client, e := ulistenner.ReadFromUDP(udata)
+	// 	// 		if e != nil {
+	// 	// 			continue
+	// 	// 		}
+	// 	// 		client.String()
+	// 	// 		if !IsNil(DupUDPClient) {
+	// 	// 			DupUDPClient.Write(udata[:n])
+	// 	// 		}
+	// 	// 		if len(Targets) > 0 {
+	// 	// 			for _, v := range Targets {
+	// 	// 				cl, er := net.DialUDP("udp", nil, v)
+	// 	// 				if er == nil {
+	// 	// 					cl.Write(udata[:n])
+	// 	// 					//转发结束，准备开启接收，但是此时注意超时问题，
+	// 	// 					go (func() {
+	// 	// 						for {
+	// 	// 							cdata := make([]byte, 2048)
+	// 	// 							n, _, e := cl.ReadFromUDP(cdata)
+	// 	// 							if e != nil {
+	// 	// 								return
+	// 	// 							}
+	// 	// 							//写入到client
+	// 	// 							// client.Write(cdata[:n])
+	// 	// 							ulistenner.WriteToUDP(cdata[:n], client)
+	// 	// 						}
+	// 	// 					})()
+	// 	// 					break
+	// 	// 				}
+	// 	// 			}
+	// 	// 		}
+	// 	// 	}
+	// 	// })()
+	// 	return true
+	// }
 	local, err := net.ResolveTCPAddr("tcp", p.Listen)
 	if err != nil {
 		log.Printf("[ERR] [%s] 本地地址错误: %s \r\n", p.Name, err)
@@ -228,6 +307,12 @@ func proxy(source, target, dup net.Conn, p Peer) {
 		io.Copy(target, source)
 		return
 	}
+	if !IsNil(dup) {
+		if dup.RemoteAddr().String() == target.RemoteAddr().String() {
+			dup.Close()
+			dup = nil
+		}
+	}
 	go (func() {
 		for {
 			b := make([]byte, size)
@@ -251,7 +336,7 @@ func proxy(source, target, dup net.Conn, p Peer) {
 			if loge {
 				logf(">\t[%s]\t%s\t"+If(p.Log == "string", "%s", "%x")+"\r\n", p.Name, source.RemoteAddr().String(), b[:n])
 			}
-			if len(p.Duplex) > 5 && !IsNil(dup) {
+			if !IsNil(dup) {
 				dup.Write(b[:n])
 			}
 		}
