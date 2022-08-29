@@ -1,13 +1,15 @@
 package main
 
 import (
+	"encoding/base64"
 	"flag"
-	"io"
+	"fmt"
 	"log"
 	"net"
 	"os"
 	"path"
-	"reflect"
+	"proxy/lib"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 
 // type
 type Config struct {
+	Name  string
 	Peers []Peer
 }
 
@@ -30,9 +33,19 @@ var ver = ""
 var loge = false
 var logf = log.Printf
 var curfile = ""
-var size = 8192
+var size = 1024
 var logFile *os.File
 var TConf *Config = &Config{Peers: make([]Peer, 0)}
+
+const (
+	ConType_TCP  = 0
+	ConType_AMQP = 1
+	ConType_UDP  = 2
+)
+
+type Target struct {
+	Type int
+}
 
 type Peer struct {
 	// 监听名称
@@ -45,6 +58,11 @@ type Peer struct {
 	Targets []string
 	// 同步将数据转发到某个地址，支持AMQP
 	Duplex string
+	//
+	DupType int
+
+	// Targetx []Target
+
 	// 日志文件路径，值存在时记录日志，否则不记录日志，自动按日期按名称切割文件，日志格式为 HH:mm:ss IP:Port > hex内容
 	Log string
 	// 开始包，必须以什么开始
@@ -55,9 +73,15 @@ type Peer struct {
 	MinLen int
 	// 本地连接
 	Listener *net.TCPListener
-	// Target   *net.Conn
+	// Target   *net.TCPConn
 	// Dup      *net.TCPConn
 	Resolved []*net.TCPAddr
+	// 链接对
+	TargetConnMap map[string]*net.TCPConn
+	// 源链接对
+	SourceConnMap map[string]*net.TCPConn
+
+	Consumed bool
 }
 
 func start(p Peer) bool {
@@ -143,11 +167,16 @@ func start(p Peer) bool {
 		log.Printf("[ERR] [%s] 本地地址错误: %s \r\n", p.Name, err)
 		return false
 	}
+	p.TargetConnMap = make(map[string]*net.TCPConn)
 	p.Resolved = make([]*net.TCPAddr, 0)
+	p.Consumed = false
+	p.SourceConnMap = make(map[string]*net.TCPConn)
 	for _, v := range p.Targets {
 		if strings.HasPrefix(v, "amqp") {
 			//TODO AMQP支持
+			// v.Type = ConType_AMQP
 		} else {
+			// v.Type = ConType_TCP
 			r, e := net.ResolveTCPAddr("tcp", v)
 			if e != nil {
 				log.Printf("[ERR] [%s] 转发地址错误: %s \r\n", p.Name, v)
@@ -155,12 +184,17 @@ func start(p Peer) bool {
 			p.Resolved = append(p.Resolved, r)
 		}
 	}
-	var DupAddr *net.TCPAddr
+	// var DupAddr *net.TCPAddr
 	if len(p.Duplex) > 0 {
-		DupAddr, err = net.ResolveTCPAddr("tcp", p.Duplex)
-		if err != nil {
-			log.Printf("[ERR] [%s] 复制目标地址错误: %s \r\n", p.Name, err)
-			return false
+		if strings.HasPrefix(p.Duplex, "amqp://") {
+			p.DupType = ConType_AMQP
+		} else {
+			p.DupType = ConType_TCP
+			_, err = net.ResolveTCPAddr("tcp", p.Duplex)
+			if err != nil {
+				log.Printf("[ERR] [%s] 复制目标地址错误: %s \r\n", p.Name, err)
+				return false
+			}
 		}
 	}
 	//2.监听服务器的地址
@@ -175,37 +209,45 @@ func start(p Peer) bool {
 
 	go (func() {
 		for {
-			conn, err := listenner.Accept() //程序会阻塞在这里，等待新的client连接进来
+			//程序会阻塞在这里，等待新的client连接进来
+			conn, err := listenner.AcceptTCP()
 			if err != nil {
 				log.Printf("[ERR] [%s] 新链接失败 : %s\r\n", p.Name, err)
 				continue
 			}
 			//循环发起连接，如果成功则使用，否则使用Duplex链接
-			var client *net.TCPConn
-			for _, c := range p.Resolved {
-				// net.Dia
-				client, err = net.DialTCP("tcp", nil, c)
-				if err != nil {
-					log.Printf("[ERR] [%s] 目标打开失败 : %s \r\n", p.Name, c.String())
-				} else {
-					break
-				}
-				// log.Printf("新连接：%s\r\n", conn.RemoteAddr().String())
-			}
-			var dup *net.TCPConn = nil
-			if DupAddr != nil {
-				dup, err = net.DialTCP("tcp", nil, DupAddr)
-				if err != nil {
-					log.Printf("[ERR] [%s] 复制目标打开失败 : %s \r\n", p.Name, p.Duplex)
-				}
-			}
-			if client == nil && dup == nil {
-				conn.Close()
-				log.Printf("[ERR] [%s] 无可用后端 \r\n", p.Name)
-			} else {
-				proxy(conn, client, dup, p)
-			}
-			log.Printf("新连接 [%s] %s > %s", p.Name, conn.RemoteAddr().String(), client.RemoteAddr().String())
+			// var client *net.TCPConn
+			// for _, c := range p.Resolved {
+			// 	// net.Dia
+			// 	_, err = net.DialTCP("tcp", nil, c)
+			// 	if err != nil {
+			// 		log.Printf("[ERR] [%s] 目标打开失败 : %s \r\n", p.Name, c.String())
+			// 	} else {
+			// 		break
+			// 	}
+			// 	// log.Printf("新连接：%s\r\n", conn.RemoteAddr().String())
+			// }
+			go proxyAMQP(*conn, p)
+			// var dup *net.TCPConn = nil
+			// if p.DupType == ConType_TCP && !lib.IsNil(DupAddr) {
+			// 	dup, err = net.DialTCP("tcp", nil, DupAddr)
+			// 	if err != nil {
+			// 		log.Printf("[ERR] [%s] 复制目标打开失败 : %s \r\n", p.Name, p.Duplex)
+			// 	}
+			// } else if p.DupType == ConType_AMQP {
+			// 	// lib.Publish(p.Duplex,p.Name,)
+			// 	go (func() {
+
+			// 	})()
+			// 	return
+			// }
+			// if client == nil && dup == nil {
+			// 	conn.Close()
+			// 	log.Printf("[ERR] [%s] 无可用后端 \r\n", p.Name)
+			// } else {
+			// 	proxy(conn, client, dup, p)
+			// }
+			log.Printf("新连接 [%s] %s ", p.Name, conn.RemoteAddr().String())
 		}
 	})()
 	return true
@@ -219,7 +261,7 @@ func config() {
 		if e == nil {
 			viper.ReadConfig(b)
 			viper.Unmarshal(TConf)
-			return
+			// return
 		}
 	} else {
 		viper.SetConfigName("proxy")
@@ -227,12 +269,13 @@ func config() {
 		if e == nil {
 			viper.Unmarshal(TConf)
 			// fmt.Println(TConf)
-			return
+			// return
 		}
 	}
-	return
+	// return
 }
 
+// 创建日志文件
 func clog() {
 	file := path.Join(logpath, time.Now().Local().Format("2006-01-02")+".log")
 	if curfile != file {
@@ -292,75 +335,261 @@ func main() {
 		clog()
 	}
 }
-func IsNil(i interface{}) bool {
-	defer func() {
-		recover()
-	}()
-	vi := reflect.ValueOf(i)
-	return vi.IsNil()
+
+//关闭通道
+func close(source net.TCPConn, p Peer) {
+	remote := source.RemoteAddr().String()
+	if !lib.IsNil(p.TargetConnMap[remote]) {
+		p.TargetConnMap[remote].Close()
+		delete(p.TargetConnMap, remote)
+	}
+	if !lib.IsNil(p.TargetConnMap[remote+"Dup"]) {
+		p.TargetConnMap[remote+"Dup"].Close()
+		delete(p.TargetConnMap, remote+"Dup")
+	}
+	source.Close()
+}
+
+// 写入数据
+func writeTo(p Peer, source net.TCPConn, remote string, b []byte) {
+	remoteDup := remote + "Dup"
+	target := false
+	targetUrl := ""
+	//需要存储来源链接=>目标链接对
+	if !lib.IsNil(p.TargetConnMap[remote]) {
+		//不是空的，此时可以直接发送
+		_, e := p.TargetConnMap[remote].Write(b)
+		if loge {
+			logf("%s\t[%s]\t%s\t"+lib.If(p.Log == "string", "%s", "%x")+"\r\n", ">", p.Name, remote, b)
+		}
+		if e != nil {
+			close(source, p)
+			fmt.Printf("%s %s 转发失败，关闭连接\n", p.Name, remote)
+			return
+			// 目标失败的情况下自动重新选择并发起连接
+		} else {
+			targetUrl = p.TargetConnMap[remote].RemoteAddr().String()
+			target = true
+		}
+	}
+	if !target {
+		for _, v := range p.Targets {
+			if strings.HasPrefix(v, "amqp://") {
+				if nil == lib.Publish(v, p.Name, strings.Join([]string{TConf.Name, remote, strconv.FormatInt(time.Now().Unix(), 10), base64.StdEncoding.EncodeToString(b)}, ",")) {
+					if loge {
+						logf("%s\t[%s]\t%s\t"+lib.If(p.Log == "string", "%s", "%x")+"\r\n", ">", p.Name, remote, b)
+					}
+					targetUrl = v
+					target = true
+					// 跳出循环，处理复制内容
+					if !p.Consumed {
+						lib.Subscribe(v, p.Name+"_"+TConf.Name, TConf.Name, func(s string) {
+							spl := strings.Split(s, ",")
+							if len(spl) == 4 && spl[0] == TConf.Name {
+								//确认是发给本人的内容
+								if !lib.IsNil(p.SourceConnMap[spl[1]]) {
+									con := p.SourceConnMap[spl[1]]
+									b, e := base64.StdEncoding.DecodeString(spl[3])
+									if e == nil {
+										con.Write(b)
+										if loge {
+											logf("%s\t[%s]\t%s\t"+lib.If(p.Log == "string", "%s", "%x")+"\r\n", "<", p.Name, spl[1], b)
+										}
+									}
+								}
+							}
+						})
+						p.Consumed = true
+					}
+					break
+				}
+			} else if strings.HasPrefix(v, "udp://") {
+				// pkey =
+			} else {
+				// 处理成TCP转发，
+				// 查询是否已经存在链接了，如果存在则取用，否则xx
+				addr, _ := net.ResolveTCPAddr("tcp", v)
+				con, e := net.DialTCP("tcp", nil, addr)
+				if e == nil {
+					//建立链接成功
+					p.TargetConnMap[remote] = con
+					//开始读取并响应回复内容
+					go copy(*con, source, p)
+					if loge {
+						logf("%s\t[%s]\t%s\t"+lib.If(p.Log == "string", "%s", "%x")+"\r\n", ">", p.Name, remote, b)
+					}
+					con.Write(b)
+					break
+				}
+			}
+		}
+	}
+
+	if len(p.Duplex) > 5 {
+		pass := false
+		if !lib.IsNil(p.TargetConnMap[remoteDup]) {
+			//不是空的，此时可以直接发送
+			_, e := p.TargetConnMap[remoteDup].Write(b)
+			if e != nil {
+				// close(source, p)
+				// 复制通道错误则尝试重连
+				pass = false
+			} else {
+				pass = true
+			}
+		}
+
+		if !pass {
+			if strings.HasPrefix(p.Duplex, "amqp://") {
+				if targetUrl != p.Duplex {
+					if nil == lib.Publish(p.Duplex, p.Name, strings.Join([]string{TConf.Name, remote, strconv.FormatInt(time.Now().Unix(), 10), base64.StdEncoding.EncodeToString(b)}, ",")) {
+						return
+					}
+				}
+			} else if strings.HasPrefix(p.Duplex, "udp://") {
+				// pkey =
+				fmt.Println("暂不支持UDP")
+			} else {
+				//已经发送过了，不再发送
+				if targetUrl == p.Duplex {
+					return
+				}
+				// 处理成TCP转发，
+				// 查询是否已经存在链接了，如果存在则取用，否则xx
+				addr, _ := net.ResolveTCPAddr("tcp", p.Duplex)
+				con, e := net.DialTCP("tcp", nil, addr)
+				if e == nil {
+					//建立链接成功
+					p.TargetConnMap[remoteDup] = con
+					//复制通道不处理读取，直接目标转发成功的情况下不处理读取
+					if !target && lib.IsNil(p.TargetConnMap[remote]) {
+						// 读取Dup的作为回复内容
+						copy(*con, source, p)
+					}
+					con.Write(b)
+				}
+			}
+		}
+	}
+
+}
+
+// 复制读入流并写入日志文件
+func copy(source, target net.TCPConn, p Peer) {
+	for {
+		b := make([]byte, size)
+		n, e := source.Read(b)
+		if e != nil {
+			source.Close()
+			target.Close()
+			return
+		}
+		if p.MinLen > 0 && n < p.MinLen {
+			continue
+		}
+		//执行忽略逻辑
+		// if len() == n*2 && *hex == fmt.Sprintf("%x", b[:n]) {
+		// 	log.Println("忽略连接数据")
+		// 	source.Close()
+		// 	target.Close()
+		// 	return
+		// }
+		target.Write(b[:n])
+		if loge {
+			logf("<\t[%s]\t%s\t"+lib.If(p.Log == "string", "%s", "%x")+"\r\n", p.Name, source.RemoteAddr().String(), b[:n])
+		}
+	}
+}
+
+//转发到AMQP
+func proxyAMQP(source net.TCPConn, p Peer) {
+	// go (func() {
+	key := source.RemoteAddr().String()
+	for {
+		b := make([]byte, size)
+		n, e := source.Read(b)
+		if e != nil {
+			source.Close()
+			return
+		} else {
+			p.SourceConnMap[key] = &source
+		}
+		if p.MinLen > 0 && n < p.MinLen {
+			continue
+		}
+		writeTo(p, source, key, b[:n])
+		// for _, v := range p.Targets {
+		// 	if strings.HasPrefix(v, "amqp") {
+		// 		if nil == lib.Publish(v, p.Name, strings.Join([]string{TConf.Name, source.RemoteAddr().String(), base64.StdEncoding.EncodeToString(b[:n])}, ",")) {
+		// 			break
+		// 		}
+		// 	}
+		// }
+		// target.Write(b[:n])
+		// if loge {
+		// 	logf(">\t[%s]\t%s\t"+lib.If(p.Log == "string", "%s", "%x")+"\r\n", p.Name, source.RemoteAddr().String(), b[:n])
+		// }
+		// if !lib.IsNil(dup) {
+		// 	dup.Write(b[:n])
+		// }
+	}
+	// })()
 }
 
 // 转发
-func proxy(source, target, dup net.Conn, p Peer) {
-	if p.Log == "false" {
-		io.Copy(source, target)
-		io.Copy(target, source)
-		return
-	}
-	if !IsNil(dup) {
-		if dup.RemoteAddr().String() == target.RemoteAddr().String() {
-			dup.Close()
-			dup = nil
-		}
-	}
-	go (func() {
-		for {
-			b := make([]byte, size)
-			n, e := source.Read(b)
-			if e != nil {
-				source.Close()
-				target.Close()
-				return
-			}
-			if p.MinLen > 0 && n < p.MinLen {
-				continue
-			}
-			//执行忽略逻辑
-			// if len() == n*2 && *hex == fmt.Sprintf("%x", b[:n]) {
-			// 	log.Println("忽略连接数据")
-			// 	source.Close()
-			// 	target.Close()
-			// 	return
-			// }
-			target.Write(b[:n])
-			if loge {
-				logf(">\t[%s]\t%s\t"+If(p.Log == "string", "%s", "%x")+"\r\n", p.Name, source.RemoteAddr().String(), b[:n])
-			}
-			if !IsNil(dup) {
-				dup.Write(b[:n])
-			}
-		}
-	})()
-	go (func() {
-		for {
-			b := make([]byte, size)
-			n, e := target.Read(b)
-			if e != nil {
-				source.Close()
-				target.Close()
-				return
-			}
-			source.Write(b[:n])
-			if loge {
-				logf("<\t[%s]\t%s\t"+If(p.Log == "string", "%s", "%x")+"\r\n", p.Name, source.RemoteAddr().String(), b[:n])
-			}
-		}
-	})()
-}
-
-func If(b bool, t, f string) string {
-	if b {
-		return t
-	}
-	return f
-}
+// func proxy(source, target, dup net.TCPConn, p Peer) {
+// 	if p.Log == "false" {
+// 		io.Copy(source, target)
+// 		io.Copy(target, source)
+// 		return
+// 	}
+// 	if !lib.IsNil(dup) {
+// 		if dup.RemoteAddr().String() == target.RemoteAddr().String() {
+// 			dup.Close()
+// 			dup = nil
+// 		}
+// 	}
+// 	go (func() {
+// 		for {
+// 			b := make([]byte, size)
+// 			n, e := source.Read(b)
+// 			if e != nil {
+// 				source.Close()
+// 				target.Close()
+// 				return
+// 			}
+// 			if p.MinLen > 0 && n < p.MinLen {
+// 				continue
+// 			}
+// 			//执行忽略逻辑
+// 			// if len() == n*2 && *hex == fmt.Sprintf("%x", b[:n]) {
+// 			// 	log.Println("忽略连接数据")
+// 			// 	source.Close()
+// 			// 	target.Close()
+// 			// 	return
+// 			// }
+// 			target.Write(b[:n])
+// 			if loge {
+// 				logf(">\t[%s]\t%s\t"+lib.If(p.Log == "string", "%s", "%x")+"\r\n", p.Name, source.RemoteAddr().String(), b[:n])
+// 			}
+// 			if !lib.IsNil(dup) {
+// 				dup.Write(b[:n])
+// 			}
+// 		}
+// 	})()
+// 	go (func() {
+// 		for {
+// 			b := make([]byte, size)
+// 			n, e := target.Read(b)
+// 			if e != nil {
+// 				source.Close()
+// 				target.Close()
+// 				return
+// 			}
+// 			source.Write(b[:n])
+// 			if loge {
+// 				logf("<\t[%s]\t%s\t"+lib.If(p.Log == "string", "%s", "%x")+"\r\n", p.Name, source.RemoteAddr().String(), b[:n])
+// 			}
+// 		}
+// 	})()
+// }

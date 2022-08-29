@@ -1,4 +1,4 @@
 *.exe
 *.linux
 *.mac
-./log/*.log
+*.log
