@@ -355,6 +355,7 @@ func main() {
 
 //关闭通道
 func close(source net.TCPConn, p Peer) {
+	// source.SetDeadline(time.Time{})
 	remote := source.RemoteAddr().String()
 	if !lib.IsNil(p.TargetConnMap[remote]) {
 		p.TargetConnMap[remote].Close()
@@ -527,6 +528,7 @@ func proxyAMQP(source net.TCPConn, p Peer) {
 	key := source.RemoteAddr().String()
 	for {
 		b := make([]byte, TConf.Size)
+		source.SetReadDeadline(time.Now().Add(300 * time.Second))
 		n, e := source.Read(b)
 		if e != nil {
 			source.Close()
