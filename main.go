@@ -41,7 +41,6 @@ var ver = ""
 var loge = false
 var logf = log.Printf
 var curfile = ""
-var size = 1024
 var logFile *os.File
 var TConf *Config = &Config{Peers: make([]Peer, 0)}
 
@@ -498,7 +497,7 @@ func writeTo(p Peer, source net.TCPConn, remote string, b []byte) {
 // 复制读入流并写入日志文件
 func copy(source, target net.TCPConn, p Peer) {
 	for {
-		b := make([]byte, size)
+		b := make([]byte, TConf.Size)
 		n, e := source.Read(b)
 		if e != nil {
 			source.Close()
@@ -527,7 +526,7 @@ func proxyAMQP(source net.TCPConn, p Peer) {
 	// go (func() {
 	key := source.RemoteAddr().String()
 	for {
-		b := make([]byte, size)
+		b := make([]byte, TConf.Size)
 		n, e := source.Read(b)
 		if e != nil {
 			source.Close()
