@@ -13,12 +13,20 @@ import (
 	"strings"
 	"time"
 
+	// "sync.aut"
+
 	"github.com/spf13/viper"
 )
 
 // type
 type Config struct {
-	Name  string
+	//名称，在AMQP模式下参与Queue的构建
+	Name string
+	//读取Buffer长度
+	Size uint
+	//日志路径地址
+	Log string
+	//多个监听地址配置
 	Peers []Peer
 }
 
@@ -28,7 +36,7 @@ type Server struct {
 var cfile = flag.String("c", "", "配置文件路径")
 
 // 日志路径
-var logpath = "./log/"
+// var logpath = "./log/"
 var ver = ""
 var loge = false
 var logf = log.Printf
@@ -248,6 +256,7 @@ func start(p Peer) bool {
 			// 	proxy(conn, client, dup, p)
 			// }
 			log.Printf("新连接 [%s] %s ", p.Name, conn.RemoteAddr().String())
+			//放到链接管理中，关闭不需要的连接
 		}
 	})()
 	return true
@@ -272,14 +281,23 @@ func config() {
 			// return
 		}
 	}
+	if len(TConf.Name) == 0 {
+		TConf.Name = "Go"
+	}
+	if len(TConf.Log) == 0 {
+		TConf.Log = "./log/"
+	}
+	if TConf.Size < 100 {
+		TConf.Size = 1024
+	}
 	// return
 }
 
 // 创建日志文件
 func clog() {
-	file := path.Join(logpath, time.Now().Local().Format("2006-01-02")+".log")
+	file := path.Join(TConf.Log, time.Now().Local().Format("2006-01-02")+".log")
 	if curfile != file {
-		err := os.MkdirAll(logpath, 0766)
+		err := os.MkdirAll(TConf.Log, 0766)
 		log.Printf("使用日志文件：%s\r\n", file)
 		if err != nil {
 			log.Fatalln("日志文件错误" + err.Error())
@@ -301,7 +319,7 @@ func clog() {
 }
 
 func main() {
-	log.Printf("版本：%s ,技术支持：490523604@qq.com，请写明标题和内容\r\n", ver)
+	log.Printf("版本：%s \r\n技术支持：490523604@qq.com，请写明标题和内容\r\n项目开源地址：https://gitee.com/tansuyun/tcp-port-forwarding\r\n", ver)
 	// 解析命令行参数
 	flag.Parse()
 	// 启动日志文件的初始化处理
@@ -346,6 +364,9 @@ func close(source net.TCPConn, p Peer) {
 	if !lib.IsNil(p.TargetConnMap[remote+"Dup"]) {
 		p.TargetConnMap[remote+"Dup"].Close()
 		delete(p.TargetConnMap, remote+"Dup")
+	}
+	if !lib.IsNil(p.SourceConnMap[remote]) {
+		delete(p.SourceConnMap, remote)
 	}
 	source.Close()
 }
