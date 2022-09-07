@@ -1,5 +1,10 @@
 ---
 Name: Go
+# 日志目录
+Log: "./log/"
+# 读取缓冲区大小
+Size: 4096
+# 配置的监听节点信息
 Peers:
 # 监听名称，用于输出到日志中
 - Name: Debug
@@ -9,11 +14,11 @@ Peers:
   # Log: string
   # 转发的目标地址，支持多个，当一个无法连接是自动连接第二个，如果Targets中一个都没法用，则使用Duplex配置
   Targets:
-    - amqp://user:pwd@host:port/vhost
-  # - hz.s.tansuyun.cn:3008
-  # - www.oschina.net:443
+    # - amqp://user:pwd@host:port/vhost
+    # - hz.s.tansuyun.cn:3008
+    - www.oschina.net:80
   # 复制数据流的地址
-  Duplex: amqp://user:pwd@host:port/vhost
+  # Duplex: amqp://user:pwd@host:port/vhost
 # - Name: Redis
 #   Listen: 0.0.0.0:6378
 #   # 禁用日志，设置为false后将直接使用io.Copy方法而忽略其他的读取和逻辑等
