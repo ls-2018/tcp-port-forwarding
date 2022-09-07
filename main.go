@@ -65,11 +65,10 @@ type Peer struct {
 	Targets []string
 	// 同步将数据转发到某个地址，支持AMQP
 	Duplex string
-	//
+	// 复制参数类型
 	DupType int
-
-	// Targetx []Target
-
+	// 连接超时时间
+	Timeout uint
 	// 日志文件路径，值存在时记录日志，否则不记录日志，自动按日期按名称切割文件，日志格式为 HH:mm:ss IP:Port > hex内容
 	Log string
 	// 开始包，必须以什么开始
@@ -254,7 +253,7 @@ func start(p Peer) bool {
 			// } else {
 			// 	proxy(conn, client, dup, p)
 			// }
-			log.Printf("新连接 [%s] %s ", p.Name, conn.RemoteAddr().String())
+			log.Printf("[%s] %s 新连接", p.Name, conn.RemoteAddr().String())
 			//放到链接管理中，关闭不需要的连接
 		}
 	})()
@@ -289,6 +288,11 @@ func config() {
 	if TConf.Size < 100 {
 		TConf.Size = 1024
 	}
+	for _, v := range TConf.Peers {
+		if v.Timeout < 100 {
+			v.Timeout = 1000
+		}
+	}
 	// return
 }
 
@@ -299,7 +303,7 @@ func clog() {
 		err := os.MkdirAll(TConf.Log, 0766)
 		log.Printf("使用日志文件：%s\r\n", file)
 		if err != nil {
-			log.Fatalln("日志文件错误" + err.Error())
+			log.Fatalln("日志文件错误: " + err.Error())
 		}
 		if logFile != nil {
 			logFile.Close()
@@ -322,8 +326,8 @@ func main() {
 	// 解析命令行参数
 	flag.Parse()
 	// 启动日志文件的初始化处理
-	clog()
 	config()
+	clog()
 	if len(TConf.Peers) == 0 {
 		log.Fatal("缺少监听配置信息")
 	}
@@ -369,6 +373,7 @@ func close(source net.TCPConn, p Peer) {
 		delete(p.SourceConnMap, remote)
 	}
 	source.Close()
+	log.Printf("[%s] %s 连接关闭", p.Name, remote)
 }
 
 // 写入数据
@@ -429,20 +434,28 @@ func writeTo(p Peer, source net.TCPConn, remote string, b []byte) {
 			} else {
 				// 处理成TCP转发，
 				// 查询是否已经存在链接了，如果存在则取用，否则xx
-				addr, _ := net.ResolveTCPAddr("tcp", v)
-				con, e := net.DialTCP("tcp", nil, addr)
+				// addr, _ := net.ResolveTCPAddr("tcp", v)
+				// con, e := net.DialTCP("tcp", nil, addr)
+				con, e := net.DialTimeout("tcp", v, time.Duration(p.Timeout)*time.Microsecond)
+				// net.TCP
 				if e == nil {
+					tcp := con.(*net.TCPConn)
 					//建立链接成功
-					p.TargetConnMap[remote] = con
+					p.TargetConnMap[remote] = tcp
 					//开始读取并响应回复内容
-					go copy(*con, source, p)
+					go copy(*tcp, source, p)
 					if loge {
 						logf("%s\t[%s]\t%s\t"+lib.If(p.Log == "string", "%s", "%x")+"\r\n", ">", p.Name, remote, b)
 					}
 					con.Write(b)
+					target = true
 					break
 				}
 			}
+		}
+		if !target {
+			log.Printf("[%s] %s 找不到目标链接\r\n", p.Name, remote)
+			close(source, p)
 		}
 	}
 
@@ -531,7 +544,8 @@ func proxyAMQP(source net.TCPConn, p Peer) {
 		source.SetReadDeadline(time.Now().Add(300 * time.Second))
 		n, e := source.Read(b)
 		if e != nil {
-			source.Close()
+			// source.Close()
+			close(source, p)
 			return
 		} else {
 			p.SourceConnMap[key] = &source
