@@ -23,7 +23,7 @@ type Config struct {
 	//名称，在AMQP模式下参与Queue的构建
 	Name string
 	//读取Buffer长度
-	Size uint
+	Size uint64
 	//日志路径地址
 	Log string
 	//多个监听地址配置
@@ -286,7 +286,7 @@ func config() {
 		TConf.Log = "./log/"
 	}
 	if TConf.Size < 100 {
-		TConf.Size = 1024
+		TConf.Size = 8096
 	}
 	for _, v := range TConf.Peers {
 		if v.Timeout < 100 {
@@ -357,7 +357,7 @@ func main() {
 	}
 }
 
-//关闭通道
+// 关闭通道
 func close(source net.TCPConn, p Peer) {
 	// source.SetDeadline(time.Time{})
 	remote := source.RemoteAddr().String()
@@ -535,12 +535,12 @@ func copy(source, target net.TCPConn, p Peer) {
 	}
 }
 
-//转发到AMQP
+// 转发到AMQP
 func proxyAMQP(source net.TCPConn, p Peer) {
 	// go (func() {
 	key := source.RemoteAddr().String()
+	b := make([]byte, TConf.Size)
 	for {
-		b := make([]byte, TConf.Size)
 		source.SetReadDeadline(time.Now().Add(300 * time.Second))
 		n, e := source.Read(b)
 		if e != nil {
