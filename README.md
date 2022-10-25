@@ -56,6 +56,9 @@ Peers:
   - 127.0.0.1:6379
   - 10.0.1.11:6379
 ```
+
+fork from https://gitee.com/tansuyun/tcp-port-forwarding
+
 ### proxy.json JSON格式配置
 ```json
 {
